@@ -5,6 +5,7 @@
 #include "freertos/task.h"
 #include "FastAccelStepper.h"
 #include <GCodeParser.h>
+#include "Unit_Encoder.h"
 
 
 String inputString  = "";
@@ -12,6 +13,7 @@ bool stringComplete = false;
 
 static Module_Stepmotor driver;
 
+Unit_Encoder sensor;
 
 // As in StepperDemo for Motor 1 on ESP32
 #define dirPinStepperX 17
@@ -33,9 +35,7 @@ float X=0.0;
 float Y=0.0;
 // Steps per degree (to convert between the coordinate systems)
 float stepsPerDegree = 200.0*32.0*(160.0/16.0)/360.0;
-//Position in Steps
-int stepX=0;
-int stepY=0;
+
 
 
 
@@ -53,9 +53,10 @@ void setup() {
     M5.Lcd.fillRect(0,150,320,20,TFT_BLUE);
     M5.Lcd.drawString("X: "+String(X)+" Y: "+String(Y), 160, 160, 2);
 
-    M5.Lcd.drawString("DIR", 70, 220, 2);
-    M5.Lcd.drawString("RST ALL", 160, 220, 2);
+    M5.Lcd.drawString("Jog", 70, 220, 2);
+    M5.Lcd.drawString("Zero ALL", 160, 220, 2);
     M5.Lcd.drawString("1/1", 260, 220, 2);
+    sensor.begin();
 
     Wire.begin(21, 22, 400000UL);
     driver.init(Wire);
@@ -109,12 +110,82 @@ void setup() {
 static uint8_t step_dir  = 1;
 int pos = 0;
 long last =0;
+bool jogMode = false;
+int jogState=0;
+signed short int last_value = 0;
+#define JOG_STATE_X_COARSE 0
+#define JOG_STATE_X_FINE 1
+#define JOG_STATE_Y_COARSE 2
+#define JOG_STATE_Y_FINE 3
 void loop() {
     bool update = millis() - last > 100;
     if (update) {
         last = millis();
     }
     M5.update();
+
+    if (jogMode) {
+        signed short int encoder_value = sensor.getEncoderValue();
+        bool btn_stauts                = sensor.getButtonStatus();
+        float diff = encoder_value - last_value;
+        if (last_value != encoder_value) {
+            if (jogState==JOG_STATE_X_COARSE) {
+                X+=1.0*diff;
+                stepperX->moveTo(X*stepsPerDegree);
+            }
+            else if (jogState==JOG_STATE_X_FINE) {
+                X+=0.1*diff;
+                stepperX->moveTo(X*stepsPerDegree);
+            }
+            else if (jogState==JOG_STATE_Y_COARSE) {
+                Y+=1.0*diff;
+                stepperY->moveTo(Y*stepsPerDegree);
+            }
+            else if (jogState==JOG_STATE_Y_FINE) {
+                Y+=0.1*diff;
+                stepperY->moveTo(Y*stepsPerDegree);
+            }
+            Serial.print("diff: ");
+            Serial.print(diff);
+            Serial.print(" encoder_value: ");
+            Serial.println(encoder_value);
+            if (last_value > encoder_value) {
+                sensor.setLEDColor(1, 0x000011);
+            } else {
+                sensor.setLEDColor(2, 0x111100);
+            }
+            last_value = encoder_value;
+            
+            M5.Lcd.fillRect(0,150,320,20,TFT_BLUE);
+            M5.Lcd.drawString("X: "+String(X)+" Y: "+String(Y), 160, 160, 2);
+        } else {
+            if(jogState==JOG_STATE_X_COARSE) {
+                sensor.setLEDColor(0, 0x110000);
+            }
+            else if(jogState==JOG_STATE_X_FINE) {
+                sensor.setLEDColor(1, 0x110000);
+                sensor.setLEDColor(2, 0);
+            }
+            else if(jogState==JOG_STATE_Y_COARSE) {
+                sensor.setLEDColor(0, 0x001100);
+            }
+            else if(jogState==JOG_STATE_Y_FINE) {
+                sensor.setLEDColor(1, 0x001100);
+                sensor.setLEDColor(2, 0);
+            }
+        }
+        if (!btn_stauts) {
+            sensor.setLEDColor(0, 0xC800FF);
+            jogState+=1;
+            if (jogState>JOG_STATE_Y_FINE) jogState=JOG_STATE_X_COARSE;
+            delay(300);
+        }
+    }
+    else
+    {
+        sensor.setLEDColor(0, 0x000000);
+    }
+
     if (update && (stepperX->isQueueRunning() || stepperY->isQueueRunning())) {
         float cX = stepperX->getCurrentPosition() / stepsPerDegree;
         float cY = stepperY->getCurrentPosition() / stepsPerDegree;
@@ -185,10 +256,22 @@ void loop() {
     }
 
 
+    if (M5.BtnA.wasPressed()) {
+        jogMode=!jogMode;
+        jogState=0;
+        if (jogMode) {
+            last_value =  sensor.getEncoderValue();
+        }
+    }
     if (M5.BtnB.wasPressed()) {
-        driver.resetMotor(0, 0);
-        driver.resetMotor(1, 0);
-        driver.resetMotor(2, 0);
+        stepperX->setCurrentPosition(0);
+        stepperY->setCurrentPosition(0);
+        X=0;
+        Y=0;
+        M5.Lcd.fillRect(0,150,320,20,TFT_BLUE);
+        M5.Lcd.drawString("X: "+String(X)+" Y: "+String(Y), 160, 160, 2);
+        M5.Lcd.fillRect(0,170,320,20,TFT_DARKGREEN);
+        M5.Lcd.drawString("X: "+String(X)+" Y: "+String(Y), 160, 180, 2);
     }
 
     if (M5.BtnC.wasPressed()) {
